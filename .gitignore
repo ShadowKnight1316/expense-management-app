@@ -1,0 +1,24 @@
+# Maven
+ExpenseManagementApp/target/
+ExpenseManagementApp/data/
+
+# Node
+ExpenseApp/node_modules/
+ExpenseManagementUI/node_modules/
+
+# Expo
+ExpenseApp/.expo/
+ExpenseApp/dist/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
