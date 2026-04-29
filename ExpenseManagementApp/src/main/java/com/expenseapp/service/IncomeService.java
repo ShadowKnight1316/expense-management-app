@@ -1,5 +1,4 @@
 package com.expenseapp.service;
-
 import com.expenseapp.dto.IncomeRequest;
 import com.expenseapp.entity.Income;
 import com.expenseapp.entity.User;
@@ -7,9 +6,7 @@ import com.expenseapp.repository.IncomeRepository;
 import com.expenseapp.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-
 import java.util.List;
-
 @Service
 @RequiredArgsConstructor
 public class IncomeService {

@@ -65,4 +65,18 @@ public class BankStatementController {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
     }
+
+    /**
+     * Remove ALL transactions imported via bank statement (paymentMode = 'Bank Transfer').
+     * DELETE /api/v1/statement/all?userId=1
+     */
+    @DeleteMapping("/all")
+    public ResponseEntity<?> removeAllStatementData(@RequestParam Long userId) {
+        try {
+            Map<String, Integer> result = bankStatementService.removeAllStatementData(userId);
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
 }

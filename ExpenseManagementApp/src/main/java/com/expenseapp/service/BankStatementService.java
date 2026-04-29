@@ -246,12 +246,24 @@ public class BankStatementService {
 
         // Buffer to accumulate multi-line transaction rows
         StringBuilder rowBuffer = new StringBuilder();
+        // Track previous balance to determine credit/debit direction
+        BigDecimal prevBalance = null;
+
+        // First pass: collect opening balance
+        for (String line : lines) {
+            if (line.toLowerCase().contains("opening balance")) {
+                Matcher m = AMOUNT_PATTERN.matcher(line);
+                BigDecimal last = null;
+                while (m.find()) last = parseAmount(m.group(1));
+                if (last != null) prevBalance = last;
+                break;
+            }
+        }
 
         for (String line : lines) {
             line = line.trim();
             if (line.isBlank()) continue;
 
-            // Skip header/footer lines
             if (line.matches("(?i).*opening balance.*|.*closing balance.*|.*account summary.*"
                     + "|.*statement generated.*|.*page \\d+.*|.*end of statement.*"
                     + "|#\\s+Date\\s+Description.*|.*withdrawal.*deposit.*balance.*")) {
@@ -259,54 +271,44 @@ public class BankStatementService {
                 continue;
             }
 
-            // Check if line starts with a row number + date (new transaction)
-            // Pattern: optional number, then date like "02 Apr 2026"
             boolean startsNewTx = line.matches("^\\d+\\s+\\d{1,2}\\s+[A-Za-z]{3}\\s+\\d{4}.*")
                     || line.matches("^\\d{1,2}[/\\-]\\d{1,2}[/\\-]\\d{2,4}.*");
 
             if (startsNewTx) {
-                // Process previous buffered row
                 if (rowBuffer.length() > 0) {
-                    StatementEntryDTO e = parseKotakRow(rowBuffer.toString().trim());
-                    if (e != null) entries.add(e);
+                    StatementEntryDTO e = parseKotakRow(rowBuffer.toString().trim(), prevBalance);
+                    if (e != null) {
+                        // Update prevBalance to the last amount in this row (the new balance)
+                        Matcher m = AMOUNT_PATTERN.matcher(rowBuffer.toString());
+                        BigDecimal last = null;
+                        while (m.find()) last = parseAmount(m.group(1));
+                        if (last != null) prevBalance = last;
+                        entries.add(e);
+                    }
                     rowBuffer.setLength(0);
                 }
                 rowBuffer.append(line);
             } else {
-                // Continuation of previous row (multi-line description)
-                if (rowBuffer.length() > 0) {
-                    rowBuffer.append(" ").append(line);
-                }
+                if (rowBuffer.length() > 0) rowBuffer.append(" ").append(line);
             }
         }
-        // Process last buffered row
         if (rowBuffer.length() > 0) {
-            StatementEntryDTO e = parseKotakRow(rowBuffer.toString().trim());
+            StatementEntryDTO e = parseKotakRow(rowBuffer.toString().trim(), prevBalance);
             if (e != null) entries.add(e);
         }
 
-        // Fallback: if nothing parsed, use generic line parser
-        if (entries.isEmpty()) {
-            entries = parsePdfGeneric(lines);
-        }
+        if (entries.isEmpty()) entries = parsePdfGeneric(lines);
 
         return entries;
     }
 
-    /**
-     * Parse a single Kotak-style transaction row.
-     * Format: [#] [DD Mon YYYY] [Description] [Ref No] [Withdrawal] [Deposit] [Balance]
-     * Amounts appear at the end; only one of Withdrawal/Deposit is present per row.
-     */
-    private StatementEntryDTO parseKotakRow(String row) {
-        // Extract date
+    private StatementEntryDTO parseKotakRow(String row, BigDecimal prevBalance) {
         Matcher dateMatcher = DATE_PATTERN.matcher(row);
         if (!dateMatcher.find()) return null;
         String rawDate = dateMatcher.group(1);
         LocalDate date = parseDate(rawDate);
         if (date == null) return null;
 
-        // Extract all amounts from the row
         List<BigDecimal> amounts = new ArrayList<>();
         List<Integer> amtPositions = new ArrayList<>();
         Matcher amtMatcher = AMOUNT_PATTERN.matcher(row);
@@ -320,58 +322,34 @@ public class BankStatementService {
         int dateEnd = dateMatcher.end();
         int firstAmtStart = amtPositions.get(0);
         String desc = row.substring(dateEnd, firstAmtStart).trim();
-        // Remove leading row number if present
         desc = desc.replaceAll("^\\d+\\s+", "").trim();
-        // Remove UPI ref numbers (long digit sequences)
         desc = desc.replaceAll("\\b\\d{12,}\\b", "").trim();
-        // Clean up
         desc = desc.replaceAll("\\s{2,}", " ").trim();
         if (desc.isBlank()) desc = "Bank Transaction";
 
-        // Kotak format: last amount = balance, second-to-last = the transaction amount
-        // If 3 amounts: [withdrawal, balance] or [deposit, balance]
-        // If 2 amounts: [amount, balance]
-        // If 1 amount: just the amount
         BigDecimal debit = BigDecimal.ZERO;
         BigDecimal credit = BigDecimal.ZERO;
 
-        if (amounts.size() >= 2) {
-            // Last amount is balance, second-to-last is the transaction
-            BigDecimal txAmt = amounts.get(amounts.size() - 2);
-            // Determine debit or credit by checking if balance went up or down
-            // Or use keyword in description
-            String rowLower = row.toLowerCase();
-            boolean isCr = rowLower.contains("upi/payake") || rowLower.contains("salary")
-                    || rowLower.contains("deposit") || rowLower.contains("credit")
-                    || rowLower.contains("received") || rowLower.contains("refund");
+        // Last amount is always the running balance
+        BigDecimal currentBalance = amounts.get(amounts.size() - 1);
+        BigDecimal txAmt = amounts.size() >= 2 ? amounts.get(amounts.size() - 2) : amounts.get(0);
 
-            // Better heuristic: if there are 3 amounts, check which column is empty
-            // Kotak PDF: withdrawal col OR deposit col has value, not both
-            if (amounts.size() == 3) {
-                // amounts: [withdrawal, deposit, balance] — one of first two is 0 or missing
-                // Since PDF strips columns, we check the row text for "0.00" gaps
-                // Use balance delta: if balance increased → credit, else → debit
-                BigDecimal balance = amounts.get(2);
-                BigDecimal prevBalance = amounts.get(0); // might be prev balance or withdrawal
-                // Just use the middle amount as transaction, determine type by description
-                txAmt = amounts.get(1);
-                if (txAmt.compareTo(BigDecimal.ZERO) == 0) txAmt = amounts.get(0);
-            }
-
-            if (isCr) credit = txAmt;
-            else debit = txAmt;
-
-            // Final fallback: use category keywords
-            if (debit.compareTo(BigDecimal.ZERO) == 0 && credit.compareTo(BigDecimal.ZERO) == 0) {
-                debit = txAmt;
+        if (prevBalance != null) {
+            // Most reliable: compare current balance with previous balance
+            BigDecimal delta = currentBalance.subtract(prevBalance);
+            if (delta.compareTo(BigDecimal.ZERO) > 0) {
+                credit = txAmt; // balance went UP → money came IN
+            } else {
+                debit = txAmt;  // balance went DOWN → money went OUT
             }
         } else {
-            BigDecimal amt = amounts.get(0);
+            // No previous balance — fall back to keywords
             String rowLower = row.toLowerCase();
-            if (rowLower.contains("deposit") || rowLower.contains("credit") || rowLower.contains("received"))
-                credit = amt;
-            else
-                debit = amt;
+            boolean isCreditKeyword = rowLower.contains("salary") || rowLower.contains("credit")
+                    || rowLower.contains("deposit") || rowLower.contains("received")
+                    || rowLower.contains("refund") || rowLower.contains("cashback");
+            if (isCreditKeyword) credit = txAmt;
+            else debit = txAmt;
         }
 
         return buildEntry(date.toString(), desc, debit, credit);
@@ -520,13 +498,34 @@ public class BankStatementService {
     }
 
     // ═════════════════════════════════════════════════════════════════════════
+    // REMOVE ALL STATEMENT DATA
+    // ═════════════════════════════════════════════════════════════════════════
+    public Map<String, Integer> removeAllStatementData(Long userId) {
+        List<com.expenseapp.entity.Expense> stmtExpenses = expenseRepository.findByUserUserId(userId)
+                .stream()
+                .filter(e -> "Bank Transfer".equals(e.getPaymentMode()))
+                .collect(Collectors.toList());
+        stmtExpenses.forEach(e -> expenseRepository.deleteById(e.getExpenseId()));
+
+        List<com.expenseapp.entity.Income> stmtIncome = incomeRepository.findByUserUserId(userId)
+                .stream()
+                .filter(i -> i.getDescription() != null && (
+                        i.getDescription().toUpperCase().contains("UPI") ||
+                        i.getDescription().toUpperCase().contains("NEFT") ||
+                        i.getDescription().toUpperCase().contains("NACH") ||
+                        i.getDescription().toUpperCase().contains("IMPS")))
+                .collect(Collectors.toList());
+        stmtIncome.forEach(i -> incomeRepository.deleteById(i.getIncomeId()));
+
+        return Map.of("expensesRemoved", stmtExpenses.size(), "incomeRemoved", stmtIncome.size());
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
     // REMOVE DUPLICATES from existing DB records
     // ═════════════════════════════════════════════════════════════════════════
     public Map<String, Integer> removeDuplicates(Long userId) {
         int expensesRemoved = 0;
         int incomeRemoved = 0;
-
-        // Deduplicate expenses: keep lowest ID, delete rest with same user+amount+date+description
         List<com.expenseapp.entity.Expense> expenses = expenseRepository.findByUserUserId(userId);
         Map<String, Long> seenExpenses = new java.util.LinkedHashMap<>();
         for (com.expenseapp.entity.Expense e : expenses) {
@@ -538,8 +537,6 @@ public class BankStatementService {
                 seenExpenses.put(key, e.getExpenseId());
             }
         }
-
-        // Deduplicate income
         List<com.expenseapp.entity.Income> incomes = incomeRepository.findByUserUserId(userId);
         Map<String, Long> seenIncome = new java.util.LinkedHashMap<>();
         for (com.expenseapp.entity.Income i : incomes) {
@@ -551,7 +548,6 @@ public class BankStatementService {
                 seenIncome.put(key, i.getIncomeId());
             }
         }
-
         return Map.of("expensesRemoved", expensesRemoved, "incomeRemoved", incomeRemoved);
     }
 }

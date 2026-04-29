@@ -25,4 +25,7 @@ public class User {
     @JsonIgnore
     @Column(nullable = false)
     private String password;
+
+    @Column
+    private String phone;
 }
