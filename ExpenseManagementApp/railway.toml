@@ -1,8 +1,8 @@
 [build]
-builder = "NIXPACKS"
-buildCommand = "mvn clean package -DskipTests"
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "java -jar target/expense-management-app-1.0.0.jar --spring.profiles.active=prod"
-healthcheckPath = "/api/v1/auth/health"
-restartPolicyType = "ON_FAILURE"
+startCommand = "java -Dspring.profiles.active=prod -jar app.jar"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
