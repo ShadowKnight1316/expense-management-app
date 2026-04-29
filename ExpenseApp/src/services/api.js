@@ -1,12 +1,7 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// Automatically use localhost when running in browser, network IP for mobile
-const isWeb = typeof window !== 'undefined' && window.location?.hostname === 'localhost';
-export const API_BASE = isWeb
-  ? 'http://localhost:8081/api/v1'          // Web browser
-  : 'http://100.76.21.32:8081/api/v1';     // Physical phone on same WiFi
-// export const API_BASE = 'https://your-app.up.railway.app/api/v1'; // Production
+export const API_BASE = 'https://expense-management-app-production.up.railway.app/api/v1';
 
 const api = axios.create({ baseURL: API_BASE });
 
@@ -63,3 +58,10 @@ export const getMonthlyReport = (userId, month, year) =>
 
 export const getCategoryReport = (userId) =>
   api.get(`/reports/category?userId=${userId}`);
+
+// ── User Profile ──────────────────────────────────────────────────────────────
+export const getUser = (userId) => api.get(`/users/${userId}`);
+export const updateUser = (userId, body) => api.put(`/users/${userId}`, body);
+export const requestEmailChange = (userId, newEmail) => api.post(`/users/${userId}/request-email-change`, { newEmail });
+export const verifyEmailChange = (userId, otp) => api.post(`/users/${userId}/verify-email-change`, { otp });
+export const changePassword = (userId, body) => api.post(`/users/${userId}/change-password`, body);
